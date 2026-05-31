@@ -1,0 +1,78 @@
+// FatTail Radar Simple v1.0
+// 简化版市场环境评分器 — 无状态机，只输出0-100环境评分
+// 副图加载 (像MACD/RSI)
+
+//@version=6
+indicator("FatTail Radar Simple v1.0", shorttitle="FT Simple", overlay=false)
+
+// ── 输入 ──
+wCompress  = input.int(40, "压缩度权重", minval=0, maxval=100)
+wVolLow    = input.int(35, "低波动权重", minval=0, maxval=100)
+wTrendBlur = input.int(25, "趋势模糊权重", minval=0, maxval=100)
+bbLen      = input.int(20, "布林带周期", minval=5, maxval=50)
+atrLen     = input.int(14, "ATR周期", minval=5, maxval=30)
+adxLen     = input.int(14, "ADX周期", minval=5, maxval=30)
+lookback   = input.int(50, "回望周期", minval=20, maxval=200)
+scoreStrong = input.int(75, "强势阈值", minval=50, maxval=95)
+scoreGood   = input.int(60, "良好阈值", minval=30, maxval=75)
+scoreWeak   = input.int(40, "弱势阈值", minval=10, maxval=50)
+
+// ── 1. 压缩度评分 ──
+bbBasis = ta.sma(close, bbLen)
+bbDev   = ta.stdev(close, bbLen) * 2
+bbWidth = bbDev * 2 / bbBasis
+bbWidthMin = ta.lowest(bbWidth, lookback)
+bbWidthMax = ta.highest(bbWidth, lookback)
+compressScore = bbWidthMax > bbWidthMin ? 
+    100 * (1 - (bbWidth - bbWidthMin) / (bbWidthMax - bbWidthMin)) : 50
+
+// ── 2. 低波动评分 ──
+atrVal = ta.atr(atrLen)
+atrMin = ta.lowest(atrVal, lookback)
+atrMax = ta.highest(atrVal, lookback)
+volLowScore = atrMax > atrMin ? 
+    100 * (1 - (atrVal - atrMin) / (atrMax - atrMin)) : 50
+
+// ── 3. 趋势模糊评分 ──
+[dmiPlus, dmiMinus, adxVal] = ta.dmi(adxLen, adxLen)
+adxMin = ta.lowest(adxVal, lookback)
+adxMax = ta.highest(adxVal, lookback)
+trendBlurScore = adxMax > adxMin ? 
+    100 * (1 - (adxVal - adxMin) / (adxMax - adxMin)) : 50
+
+// ── 综合评分 ──
+totalWeight = wCompress + wVolLow + wTrendBlur
+envScore = math.round((compressScore * wCompress + volLowScore * wVolLow + trendBlurScore * wTrendBlur) / totalWeight)
+
+// ── 视觉输出 ──
+plot(envScore, "环境评分", color=color.new(#2196F3, 0), linewidth=2)
+hline(scoreStrong, "强势线", color=color.new(#4CAF50, 50), linestyle=hline.style_dashed)
+hline(scoreGood,   "良好线", color=color.new(#FF9800, 50), linestyle=hline.style_dashed)
+hline(scoreWeak,   "弱势线", color=color.new(#F44336, 50), linestyle=hline.style_dashed)
+bgcolor(envScore >= scoreStrong ? color.new(#4CAF50, 85) : na, title="强势区")
+bgcolor(envScore >= scoreGood and envScore < scoreStrong ? color.new(#FF9800, 90) : na, title="良好区")
+bgcolor(envScore < scoreWeak ? color.new(#F44336, 90) : na, title="弱势区")
+scoreChange = envScore - envScore[1]
+plot(scoreChange > 0 ? scoreChange : na, "评分上升", style=plot.style_columns, color=color.new(#4CAF50, 30))
+plot(scoreChange < 0 ? scoreChange : na, "评分下降", style=plot.style_columns, color=color.new(#F44336, 30))
+
+// ── 信息面板 ──
+var table t = table.new(position.top_right, 2, 5, bgcolor=color.new(#1a1a2e, 10), frame_width=1, frame_color=color.gray)
+if barstate.islast
+    table.cell(t, 0, 0, "FT Simple", text_color=#2196F3, text_size=size.small)
+    table.cell(t, 1, 0, "v1.0", text_color=color.gray, text_size=size.tiny)
+    table.cell(t, 0, 1, "环境评分", text_color=color.white, text_size=size.small)
+    sc = envScore >= scoreStrong ? #4CAF50 : envScore >= scoreGood ? #FF9800 : #F44336
+    table.cell(t, 1, 1, str.tostring(envScore), text_color=sc, text_size=size.normal)
+    table.cell(t, 0, 2, "压缩度", text_color=color.gray, text_size=size.tiny)
+    table.cell(t, 1, 2, str.tostring(math.round(compressScore)), text_color=color.gray, text_size=size.tiny)
+    table.cell(t, 0, 3, "低波动", text_color=color.gray, text_size=size.tiny)
+    table.cell(t, 1, 3, str.tostring(math.round(volLowScore)), text_color=color.gray, text_size=size.tiny)
+    table.cell(t, 0, 4, "趋势模糊", text_color=color.gray, text_size=size.tiny)
+    table.cell(t, 1, 4, str.tostring(math.round(trendBlurScore)), text_color=color.gray, text_size=size.tiny)
+
+// ── 警报 ──
+alertcondition(ta.crossover(envScore, scoreStrong), "环境进入强势", "FT: 评分突破强势阈值 {{plot_0}}")
+alertcondition(ta.crossunder(envScore, scoreWeak),  "环境跌入弱势", "FT: 评分跌破弱势阈值 {{plot_0}}")
+
+// 输出变量供外部引用: 其他指标可通过 input.source() 选择本指标的"环境评分"
