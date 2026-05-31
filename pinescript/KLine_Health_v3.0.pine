@@ -1,0 +1,170 @@
+// K线健康质量 (KLine Health) v3.0
+// 基于连续3-4根K线共同特征的点火信号检测器
+// 核心理念来自 KakarottoGoku/介喜Jessie
+// 主图加载 (overlay=true)
+
+//@version=6
+indicator("K线健康质量 v3.0", shorttitle="KLine Health", overlay=true)
+
+// ── 簇检测参数 ──
+clusterLen      = input.int(3, "簇长度", minval=2, maxval=5)
+qualityThresh   = input.int(50, "单根质量阈值", minval=20, maxval=80)
+avgQualityThresh= input.int(60, "簇平均质量阈值", minval=30, maxval=80)
+bodyGrowthThresh= input.float(0.8, "实体递增阈值", minval=0.5, maxval=2.0, step=0.1)
+closePushThresh = input.float(1.005, "收盘推进阈值", minval=1.0, maxval=1.05, step=0.005)
+
+// ── 扣分项阈值 ──
+dojiThreshold   = input.float(0.05, "十字星阈值", minval=0.01, maxval=0.2, step=0.01)
+smallBodyThreshold=input.float(0.20, "小实体阈值", minval=0.05, maxval=0.5, step=0.01)
+maxShadowToBody = input.float(3.0, "影线/实体最大", minval=1.0, maxval=10.0, step=0.5)
+maxWickToRange  = input.float(0.70, "影线/范围最大", minval=0.3, maxval=0.9, step=0.05)
+spikeMult       = input.float(4.0, "突然增大倍数", minval=1.5, maxval=10.0, step=0.5)
+volLookback     = input.int(20, "成交量回望", minval=5, maxval=50)
+
+// ── 趋势过滤 ──
+useTrendFilter = input.bool(true, "启用趋势过滤")
+trendEmaLen    = input.int(50, "趋势EMA", minval=10, maxval=200)
+
+// ── 外部指标 (4星用) ──
+use4Star     = input.bool(false, "启用4星判定")
+ftScoreInput = input.source(close, "FatTail评分")
+ftScoreThresh= input.int(75, "FT强势阈值", minval=50, maxval=95)
+
+// ── 显示选项 ──
+showQualityBar = input.bool(true, "显示K线质量颜色")
+showClusterBg  = input.bool(true, "显示簇背景")
+showStarLabel  = input.bool(true, "显示星级")
+showDeduction  = input.bool(true, "显示扣分")
+showInfoPanel  = input.bool(true, "信息面板")
+
+// ═══ 单根质量评分 ═══
+body     = math.abs(close - open)
+rangeVal = high - low
+upperShadow = high - math.max(open, close)
+lowerShadow = math.min(open, close) - low
+totalShadow = upperShadow + lowerShadow
+bodyRatio   = rangeVal > 0 ? body / rangeVal : 0
+closePos    = rangeVal > 0 ? (close - low) / rangeVal : 0.5
+totalShadowRatio = rangeVal > 0 ? totalShadow / rangeVal : 0
+shadowToBody     = body > 0 ? totalShadow / body : 999
+upperWickRatio   = rangeVal > 0 ? upperShadow / rangeVal : 0
+lowerWickRatio   = rangeVal > 0 ? lowerShadow / rangeVal : 0
+avgVol     = ta.sma(volume, volLookback)
+volRatio   = avgVol > 0 ? volume / avgVol : 1
+atr14      = ta.atr(14)
+
+// 扣分检测
+isDoji       = bodyRatio < dojiThreshold
+isSmallBody  = bodyRatio < smallBodyThreshold
+isLongShadow = shadowToBody > maxShadowToBody
+isSpike      = atr14 > 0 and body > spikeMult * atr14
+isBattle     = upperWickRatio > 0.3 and lowerWickRatio > 0.3 and bodyRatio < 0.4
+
+// 质量分
+baseScore = bodyRatio * 35 + (1 - totalShadowRatio) * 30 + closePos * 20 + math.min(volRatio, 2) * 5
+baseScore := totalShadowRatio < 0.2 and bodyRatio > 0.5 ? baseScore + 5 : baseScore
+penalty = (isDoji ? 40 : 0) + (isSpike ? 35 : 0) + (isLongShadow ? 30 : 0) + (isSmallBody ? 25 : 0) + (isBattle ? 25 : 0)
+qualityScore = math.max(0, baseScore - penalty)
+isHighQuality = qualityScore >= qualityThresh
+
+// ═══ 连续簇检测 ═══
+bullStreak = isHighQuality and close > open ? (bullStreak[1] + 1) : 0
+bearStreak = isHighQuality and close < open ? (bearStreak[1] + 1) : 0
+
+// 簇平均 + 递增 + 推进
+qB1 = bullStreak >= 1 ? qualityScore : 0
+qB2 = bullStreak >= 2 ? qualityScore[1] : 0
+qB3 = bullStreak >= 3 ? qualityScore[2] : 0
+qB4 = bullStreak >= 4 ? qualityScore[3] : 0
+avgQBull = clusterLen == 2 ? (qB1+qB2)/2 : clusterLen == 3 ? (qB1+qB2+qB3)/3 : clusterLen == 4 ? (qB1+qB2+qB3+qB4)/4 : 0
+bodyB1 = bullStreak >= 1 ? body : 0; bodyB2 = bullStreak >= 2 ? body[1] : 0
+closeB1 = bullStreak >= 1 ? close : 0; closeB2 = bullStreak >= 2 ? close[1] : 0
+bodyGBull = bodyB2 > 0 ? bodyB1 / bodyB2 : 1
+closePBull = closeB2 > 0 ? closeB1 / closeB2 : 1
+
+qR1 = bearStreak >= 1 ? qualityScore : 0
+qR2 = bearStreak >= 2 ? qualityScore[1] : 0
+qR3 = bearStreak >= 3 ? qualityScore[2] : 0
+qR4 = bearStreak >= 4 ? qualityScore[3] : 0
+avgQBear = clusterLen == 2 ? (qR1+qR2)/2 : clusterLen == 3 ? (qR1+qR2+qR3)/3 : clusterLen == 4 ? (qR1+qR2+qR3+qR4)/4 : 0
+bodyR1 = bearStreak >= 1 ? body : 0; bodyR2 = bearStreak >= 2 ? body[1] : 0
+closeR1 = bearStreak >= 1 ? close : 0; closeR2 = bearStreak >= 2 ? close[1] : 0
+bodyGBear = bodyR2 > 0 ? bodyR1 / bodyR2 : 1
+closePBear = closeR2 > 0 ? closeR1 / closeR2 : 1
+
+// 趋势
+trendEma = ta.ema(close, trendEmaLen)
+trendUp  = close > trendEma
+trendDown= close < trendEma
+
+// 点火条件
+clusterBull = bullStreak >= clusterLen and avgQBull >= avgQualityThresh
+clusterBear = bearStreak >= clusterLen and avgQBear >= avgQualityThresh
+bullPush = closePBull >= closePushThresh
+bearPush = closePBear <= (1/closePushThresh)
+bullGrow = bodyGBull >= bodyGrowthThresh
+bearGrow = bodyGBear >= bodyGrowthThresh
+bullTrendOk = not useTrendFilter or trendUp
+bearTrendOk = not useTrendFilter or trendDown
+ftValid = use4Star and ftScoreInput < 1000
+
+// 星级
+b1 = clusterBull and bullTrendOk
+b2 = b1 and bullGrow and not isDoji and not isSpike
+b3 = b2 and bullPush and volRatio > 1.0
+b4 = b3 and ftValid and ftScoreInput >= ftScoreThresh
+
+r1 = clusterBear and bearTrendOk
+r2 = r1 and bearGrow and not isDoji and not isSpike
+r3 = r2 and bearPush and volRatio > 1.0
+r4 = r3 and ftValid and ftScoreInput >= ftScoreThresh
+
+starB = b4 ? 4 : b3 ? 3 : b2 ? 2 : b1 ? 1 : 0
+starR = r4 ? 4 : r3 ? 3 : r2 ? 2 : r1 ? 1 : 0
+
+// ═══ 视觉 ═══
+barColor = showQualityBar ? (isHighQuality and close > open ? color.new(#4CAF50, 40) : isHighQuality and close < open ? color.new(#F44336, 40) : qualityScore >= 30 ? color.new(#FF9800, 60) : color.new(color.gray, 70)) : na
+barcolor(barColor)
+
+if showClusterBg
+    if bullStreak >= clusterLen; bgcolor(color.new(#4CAF50, 90))
+    if bearStreak >= clusterLen; bgcolor(color.new(#F44336, 90))
+
+if showStarLabel
+    if starB > 0
+        c = starB == 4 ? #FFD700 : starB == 3 ? #4CAF50 : starB == 2 ? #FF9800 : #2196F3
+        label.new(bar_index, low, str.repeat("★", starB), color=color.new(c, 80), textcolor=c, style=label.style_label_up, size=size.small)
+    if starR > 0
+        c = starR == 4 ? #FFD700 : starR == 3 ? #F44336 : starR == 2 ? #FF9800 : #2196F3
+        label.new(bar_index, high, str.repeat("★", starR), color=color.new(c, 80), textcolor=c, style=label.style_label_down, size=size.small)
+
+if showDeduction
+    dt = (isDoji ? "D" : "") + (isSpike ? "S" : "") + (isLongShadow ? "W" : "") + (isSmallBody ? "B" : "") + (isBattle ? "F" : "")
+    if dt != ""
+        label.new(bar_index, close > open ? low : high, dt, color=color.new(color.gray, 80), textcolor=color.white, style=close > open ? label.style_label_down : label.style_label_up, size=size.tiny)
+
+// 信息面板
+if showInfoPanel
+    var table t = table.new(position.bottom_right, 2, 8, bgcolor=color.new(#1a1a2e, 10), frame_width=1, frame_color=color.gray)
+    if barstate.islast
+        table.cell(t, 0, 0, "KLine Health", text_color=#2196F3, text_size=size.small)
+        table.cell(t, 1, 0, "v3.0", text_color=color.gray, text_size=size.tiny)
+        table.cell(t, 0, 1, "质量", text_color=color.white, text_size=size.small)
+        qc = qualityScore >= qualityThresh ? #4CAF50 : qualityScore >= 30 ? #FF9800 : #F44336
+        table.cell(t, 1, 1, str.tostring(math.round(qualityScore)), text_color=qc, text_size=size.normal)
+        table.cell(t, 0, 2, "多头连续", text_color=color.gray, text_size=size.tiny)
+        table.cell(t, 1, 2, str.tostring(bullStreak), text_color=#4CAF50, text_size=size.tiny)
+        table.cell(t, 0, 3, "空头连续", text_color=color.gray, text_size=size.tiny)
+        table.cell(t, 1, 3, str.tostring(bearStreak), text_color=#F44336, text_size=size.tiny)
+        table.cell(t, 0, 4, "趋势", text_color=color.gray, text_size=size.tiny)
+        tt = trendUp ? "上升" : trendDown ? "下降" : "震荡"
+        tc = trendUp ? #4CAF50 : trendDown ? #F44336 : color.gray
+        table.cell(t, 1, 4, tt, text_color=tc, text_size=size.tiny)
+        fd = ftValid ? str.tostring(math.round(ftScoreInput)) : "未连"
+        fc = ftValid ? (ftScoreInput >= ftScoreThresh ? #4CAF50 : color.gray) : color.gray
+        table.cell(t, 0, 5, "FT", text_color=color.gray, text_size=size.tiny)
+        table.cell(t, 1, 5, fd, text_color=fc, text_size=size.tiny)
+
+// 警报
+alertcondition(starB >= 3, "多头3星+", "KLine: 多头{{starB}}星点火!")
+alertcondition(starR >= 3, "空头3星+", "KLine: 空头{{starR}}星点火!")
